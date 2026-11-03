@@ -1,0 +1,17 @@
+{
+  "project": "C:/Users/openface/Desktop/MetaThomas/MetaThomas.uproject",
+  "editor": "C:/Program Files/Epic Games/UE_5.3/Engine/Binaries/Win64/UnrealEditor.exe",
+  "asset_root": "/Game/MHBatchRender",
+  "avatars": {
+    "Bernice": {"preset": "split", "aliases": ["BP_Bernice"]},
+    "Stephane": {"preset": "redlantern", "aliases": ["BP_Stephane"]}
+  },
+  "presets": {
+    "split": {"map": "/Game/MHBatchRender/Templates/Split", "source_map": "/Game/Maps/MHC_LightingPresets_RT/MHC_LightingPreset_Split_RT1", "actor": "BP_Bernice", "camera": "CineCameraActor"},
+    "redlantern": {"map": "/Game/MHBatchRender/Templates/RedLantern", "source_map": "/Game/Maps/MHC_LightingPresets_RT/MHC_LightingPreset_RedLantern_RT", "actor": "BP_Stephane", "camera": "CineCameraActor"}
+  },
+  "resolution": [512, 512],
+  "engine_warm_up_frames": 50,
+  "render_warm_up_frames": 32,
+  "spatial_samples": 8
+}

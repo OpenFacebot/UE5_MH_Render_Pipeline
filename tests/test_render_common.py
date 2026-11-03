@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import render_common as common
-import render as cli
+from image_render import render_common as common
+from image_render import render as cli
 
 
 class CsvPipelineTests(unittest.TestCase):
@@ -35,6 +35,24 @@ class CsvPipelineTests(unittest.TestCase):
         self.assertEqual(motion['sha256'], hashlib.sha256(before).hexdigest())
         self.assertEqual([float(v) for v in motion['records'][0]['values']], [i/100 for i in range(61)])
         self.assertEqual(self.source.read_bytes(), before)
+
+    def test_atomic_status_write_survives_transient_windows_reader_lock(self):
+        destination = self.root/'status.json'
+        common.atomic_json(destination, {'state':'rendering'})
+        replace = Path.replace
+        attempts = []
+        def temporarily_locked(source, target):
+            attempts.append(source)
+            if len(attempts) == 1:
+                self.assertEqual(common.read_json(target), {'state':'rendering'})
+                raise PermissionError('Windows reader still has destination open')
+            return replace(source, target)
+        with patch.object(Path, 'replace', autospec=True, side_effect=temporarily_locked), \
+                patch.object(common.time, 'sleep'):
+            common.atomic_json(destination, {'state':'completed','verified_images':3})
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(common.read_json(destination), {'state':'completed','verified_images':3})
+        self.assertFalse(destination.with_suffix('.json.tmp').exists())
 
     def test_last_row_has_one_image_and_original_idx(self):
         motion = common.read_motion(self.source)

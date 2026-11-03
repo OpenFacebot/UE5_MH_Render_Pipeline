@@ -6,7 +6,7 @@ import traceback
 from pathlib import Path
 
 import unreal
-from render_common import ROOT, RUNTIME, atomic_json, config, read_json, validate_images, finalize_capture
+from image_render.render_common import ROOT, RUNTIME, atomic_json, config, read_json, validate_images, finalize_capture
 
 
 def world_asset(path):

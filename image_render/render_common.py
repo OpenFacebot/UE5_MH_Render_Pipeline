@@ -9,7 +9,7 @@ import struct
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / '.runtime'
 CHANNELS = ('EyeBlinkLeft EyeLookDownLeft EyeLookInLeft EyeLookOutLeft EyeLookUpLeft '
             'EyeSquintLeft EyeWideLeft EyeBlinkRight EyeLookDownRight EyeLookInRight '
@@ -30,7 +30,16 @@ def atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-    temporary.replace(path)
+    # Windows readers can briefly hold the destination without delete sharing.
+    # Retry the atomic replacement so status polling cannot fail a finished render.
+    for attempt in range(8):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(min(0.01 * 2**attempt, 0.1))
 
 
 def read_json(path):

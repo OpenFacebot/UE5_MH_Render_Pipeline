@@ -6,8 +6,8 @@ import time
 import uuid
 from pathlib import Path
 
-from render_common import (RUNTIME, atomic_json, config, prepare_job, read_json,
-                           read_motion, resolve_avatar, avatar_for_preset, image_progress)
+from image_render.render_common import (RUNTIME, atomic_json, config, prepare_job, read_json,
+                                       read_motion, resolve_avatar, avatar_for_preset, image_progress)
 
 TERMINAL_STATES = {'completed', 'failed', 'cancelled', 'interrupted', 'superseded'}
 
@@ -20,11 +20,23 @@ def require_service():
         if Path(heartbeat['project']).resolve() != Path(config()['project']).resolve():
             raise ValueError('wrong project')
     except (OSError, ValueError, KeyError):
-        raise RuntimeError('Unreal render service is offline. Open MetaThomas and run start_service.py '
+        raise RuntimeError('Unreal render service is offline. Open MetaThomas and run image_render/start_service.py '
                            'from the Unreal Python menu/console. See README.md.')
 
 
-def submit(args):
+def enqueue_motion(motion, preset, output, start_row=0, count=None, *, avatar):
+    """Submit a validated CSV snapshot through the shared Unreal render queue."""
+    require_service()
+    job_id = time.strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:10]
+    job = prepare_job(motion, preset, output, job_id, start_row, count, avatar=avatar)
+    atomic_json(RUNTIME / 'requests' / (job_id + '.json'), job)
+    print(json.dumps({'submitted': job_id, 'avatar': avatar, 'preset': preset,
+                      'expected_images': job['expected_images'], 'output': job['output']}, ensure_ascii=False), flush=True)
+    return job
+
+
+def iter_jobs(args):
+    """Validate all inputs, then submit each job only as the caller requests it."""
     cfg = config()
     avatar, preset = resolve_avatar(args.avatar, cfg)
     paths = []
@@ -48,19 +60,19 @@ def submit(args):
                       'expected_images': sum(s['selected_rows'] for s in summary),
                       'dry_run': args.dry_run}, ensure_ascii=False, indent=2), flush=True)
     if args.dry_run:
-        return 0
-    require_service()
-    jobs = []
+        return
     for motion in motions:
-        job_id = time.strftime('%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:10]
-        job = prepare_job(motion, preset, args.output, job_id, args.start_row, args.count, avatar=avatar)
-        atomic_json(RUNTIME / 'requests' / (job_id + '.json'), job)
-        jobs.append(job)
-        print(json.dumps({'submitted': job_id, 'avatar': avatar, 'preset': preset,
-                          'expected_images': job['expected_images'], 'output': job['output']}, ensure_ascii=False), flush=True)
-    if not args.wait:
-        return 0
-    return wait_for_jobs(jobs, args.timeout)
+        yield enqueue_motion(motion, preset, args.output, args.start_row, args.count, avatar=avatar)
+
+
+def enqueue_jobs(args):
+    """Queue all images immediately for the ordinary image-only render entry point."""
+    return list(iter_jobs(args))
+
+
+def submit(args):
+    jobs = enqueue_jobs(args)
+    return wait_for_jobs(jobs, args.timeout) if args.wait and jobs else 0
 
 
 def current_status(job, progress=True):
@@ -73,6 +85,13 @@ def current_status(job, progress=True):
             status['avatar'] = status['preset']
     if progress:
         status.update(image_progress(status))
+    receipt = Path(status['output']) / 'image_cleanup.json'
+    if receipt.is_file():
+        video = read_json(receipt)
+        if video.get('source_job_id') == status['id']:
+            status['video'] = video['video']
+            status['video_frames'] = video['frames']
+            status['image_cleanup'] = video['image_cleanup']
     return status
 
 
@@ -89,9 +108,14 @@ def wait_for_jobs(jobs, timeout=0):
             statuses.append(status)
             if refresh_progress or last.get(job['id']) != status['state']:
                 status.update(image_progress(status))
-                print(f'[{status["avatar"]}] {status["state"]} | '
-                      f'图片 {status["images_written"]}/{status["expected_images"]} '
-                      f'({status["image_progress_percent"]:.2f}%) | {job["id"]}', flush=True)
+                cleanup = status.get('image_cleanup', {})
+                if cleanup.get('deleted_images'):
+                    detail = (f'视频 {status["video_frames"]} 帧 | '
+                              f'PNG 已清理 {cleanup["deleted_images"]}/{status["expected_images"]}')
+                else:
+                    detail = (f'图片 {status["images_written"]}/{status["expected_images"]} '
+                              f'({status["image_progress_percent"]:.2f}%)')
+                print(f'[{status["avatar"]}] {status["state"]} | {detail} | {job["id"]}', flush=True)
                 if status.get('error'):
                     print(status['error'], file=sys.stderr, flush=True)
                 last[job['id']] = status['state']
@@ -105,10 +129,7 @@ def wait_for_jobs(jobs, timeout=0):
         time.sleep(1)
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest='command', required=True)
-    send = commands.add_parser('submit', help='Render CSV files (or a folder recursively)')
+def add_submit_arguments(send):
     send.add_argument('--csv', action='append', required=True, help='File or folder; repeat for multiple inputs')
     send.add_argument('--pattern', default='*.csv', help='Glob used when --csv is a directory')
     send.add_argument('--avatar', required=True, help='One avatar: Bernice or Stephane (case insensitive; BP_ aliases accepted)')
@@ -118,6 +139,13 @@ def build_parser():
     send.add_argument('--dry-run', action='store_true', help='Validate CSVs and print image counts without writing jobs')
     send.add_argument('--wait', action='store_true')
     send.add_argument('--timeout', type=float, default=0, help='Wait timeout in seconds; 0 means unlimited')
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    send = commands.add_parser('submit', help='Render CSV files (or a folder recursively)')
+    add_submit_arguments(send)
     status = commands.add_parser('status')
     status.add_argument('job_id', nargs='?')
     status.add_argument('--watch', action='store_true', help='Watch actual image counts for one job')
